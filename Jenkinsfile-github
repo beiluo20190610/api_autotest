@@ -18,6 +18,7 @@ pipeline {
 
     parameters {
         string(name: 'GIT_BRANCH', defaultValue: 'main', description: 'Git 分支')
+        string(name: 'GIT_PROXY', defaultValue: 'http://127.0.0.1:7890', description: 'Git 访问 GitHub 代理（Clash 混合端口）；留空则直连')
         string(name: 'ENV_FILE', defaultValue: 'D:\\MyTest-API\\MyTest\\api_autotest\\.env', description: '构建机 .env 路径（含 MYSQL/LOGIN 等，不提交 Git）')
         choice(name: 'MODE', choices: ['full', 'smoke'], description: 'full=全量场景, smoke=冒烟')
         booleanParam(name: 'SKIP_DB_CHECK', defaultValue: false, description: '跳过 MySQL 连通性检查')
@@ -27,17 +28,46 @@ pipeline {
     }
 
     stages {
+        stage('Prepare Git Proxy') {
+            steps {
+                script {
+                    def proxy = params.GIT_PROXY?.trim()
+                    if (proxy) {
+                        bat """
+                            git config --global http.https://github.com.proxy ${proxy}
+                            echo GitHub proxy: ${proxy}
+                        """
+                    } else {
+                        bat 'git config --global --unset http.https://github.com.proxy 2>nul & ver >nul'
+                        echo 'GIT_PROXY 为空，Git 将直连 GitHub'
+                    }
+                }
+            }
+        }
+
         stage('Checkout') {
             steps {
-                checkout([
-                    $class           : 'GitSCM',
-                    branches         : [[name: "*/${params.GIT_BRANCH}"]],
-                    userRemoteConfigs: [[url: "${env.GIT_URL}"]],
-                    extensions       : [[$class: 'CloneOption', depth: 1, shallow: true, noTags: true]]
-                ])
-                echo "Pipeline 脚本：Jenkinsfile-github"
-                echo "仓库：${env.GIT_URL} @ ${params.GIT_BRANCH}"
-                echo "工作目录：${env.WORKSPACE}"
+                script {
+                    def proxy = params.GIT_PROXY?.trim()
+                    def checkoutSteps = {
+                        checkout([
+                            $class           : 'GitSCM',
+                            branches         : [[name: "*/${params.GIT_BRANCH}"]],
+                            userRemoteConfigs: [[url: "${env.GIT_URL}"]],
+                            extensions       : [[$class: 'CloneOption', depth: 1, shallow: true, noTags: true]]
+                        ])
+                        echo "Pipeline 脚本：Jenkinsfile-github"
+                        echo "仓库：${env.GIT_URL} @ ${params.GIT_BRANCH}"
+                        echo "工作目录：${env.WORKSPACE}"
+                    }
+                    if (proxy) {
+                        withEnv(["HTTP_PROXY=${proxy}", "HTTPS_PROXY=${proxy}"]) {
+                            checkoutSteps()
+                        }
+                    } else {
+                        checkoutSteps()
+                    }
+                }
             }
         }
 
