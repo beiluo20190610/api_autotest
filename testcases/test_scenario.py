@@ -17,10 +17,9 @@ def build_scenario_params(scenarios):
     params = []
     for scenario in scenarios:
         marks = [pytest.mark.scenario]
-        if scenario["scenario_id"] in ScenarioRunner.SKIP_SCENARIO_IDS:
-            marks.append(
-                pytest.mark.skip(reason="依赖外部 importProduct URL，当前环境暂跳过")
-            )
+        skip_reason = ScenarioRunner.skip_reason(scenario["scenario_id"])
+        if skip_reason:
+            marks.append(pytest.mark.skip(reason=skip_reason))
         for source in (scenario.get("tags", ""), scenario.get("priority", "")):
             for part in str(source).split(","):
                 tag = part.strip()
@@ -51,5 +50,5 @@ class TestScenarioChain:
         if tag_list:
             allure.dynamic.tag(*tag_list)
 
-        runner = ScenarioRunner(api_client)
+        runner = ScenarioRunner(api_client, scenario_id=scenario["scenario_id"])
         runner.run(scenario["steps"], scenario_name=scenario["scenario_name"])

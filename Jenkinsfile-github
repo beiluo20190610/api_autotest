@@ -1,0 +1,142 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    environment {
+        PYTHONIOENCODING = 'utf-8'
+        SKIP_CLEANUP = '0'
+        GIT_URL = 'https://github.com/beiluo20190610/api_autotest.git'
+        // checkout 后代码在 workspace 根目录（仓库即项目根，无 api_autotest 子目录）
+        PROJECT_DIR = "${WORKSPACE}"
+        PYTHONPATH = "${WORKSPACE}"
+    }
+
+    parameters {
+        string(name: 'GIT_BRANCH', defaultValue: 'main', description: 'Git 分支')
+        string(name: 'ENV_FILE', defaultValue: 'D:\\MyTest-API\\MyTest\\api_autotest\\.env', description: '构建机 .env 路径（含 MYSQL/LOGIN 等，不提交 Git）')
+        choice(name: 'MODE', choices: ['full', 'smoke'], description: 'full=全量场景, smoke=冒烟')
+        booleanParam(name: 'SKIP_DB_CHECK', defaultValue: false, description: '跳过 MySQL 连通性检查')
+        booleanParam(name: 'SKIP_VERIFY', defaultValue: false, description: '跳过后端 P0/P1 探针')
+        booleanParam(name: 'SKIP_CLEANUP', defaultValue: false, description: 'pytest 结束后不清理测试数据')
+        string(name: 'FILTER', defaultValue: '', description: 'pytest -k 过滤，如 SCN-SYSTEMSTORE')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout([
+                    $class           : 'GitSCM',
+                    branches         : [[name: "*/${params.GIT_BRANCH}"]],
+                    userRemoteConfigs: [[url: "${env.GIT_URL}"]],
+                    extensions       : [[$class: 'CloneOption', depth: 1, shallow: true, noTags: true]]
+                ])
+                echo "Pipeline 脚本：Jenkinsfile-github"
+                echo "仓库：${env.GIT_URL} @ ${params.GIT_BRANCH}"
+                echo "工作目录：${env.WORKSPACE}"
+            }
+        }
+
+        stage('环境配置') {
+            steps {
+                script {
+                    def envSource = params.ENV_FILE?.trim()
+                    if (envSource && fileExists(envSource)) {
+                        bat """
+                            copy /Y "${envSource}" .env
+                            echo 已从构建机复制 .env: ${envSource}
+                        """
+                    } else if (fileExists('.env')) {
+                        echo '使用 workspace 内已有 .env'
+                    } else {
+                        error("未找到 .env：请检查 ENV_FILE 参数（当前: ${envSource ?: '空'}），或在本机构建机放置环境文件")
+                    }
+                }
+            }
+        }
+
+        stage('安装依赖') {
+            steps {
+                bat '''
+                    python -m pip install -U pip
+                    pip install -r requirements.txt
+                '''
+            }
+        }
+
+        stage('DB Check') {
+            when {
+                expression { return !params.SKIP_DB_CHECK }
+            }
+            steps {
+                bat 'python scripts\\check_db_connectivity.py'
+            }
+        }
+
+        stage('Backend Verify') {
+            when {
+                expression { return !params.SKIP_VERIFY }
+            }
+            steps {
+                bat 'python scripts\\verify_backend_fixes.py'
+            }
+        }
+
+        stage('Scenario Tests') {
+            steps {
+                script {
+                    def marker = params.MODE == 'smoke' ? 'scenario and smoke' : 'scenario'
+                    def filterArg = params.FILTER?.trim() ? "-k \"${params.FILTER.trim()}\"" : ''
+                    def skipCleanup = params.SKIP_CLEANUP ? 'set SKIP_CLEANUP=1&&' : ''
+                    bat """
+                        ${skipCleanup} python scripts\\clean_allure.py
+                        ${skipCleanup} pytest testcases\\test_scenario.py -m "${marker}" ${filterArg} -v -s -rA --alluredir=./allure-results
+                    """
+                }
+            }
+        }
+
+        stage('Allure Report') {
+            steps {
+                bat '''
+                    where allure >nul 2>&1
+                    if %ERRORLEVEL%==0 (
+                        allure generate allure-results -o allure-report --clean
+                    ) else (
+                        echo allure CLI not found, skip report generation
+                    )
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'allure-results/**,allure-report/**,logs/**', allowEmptyArchive: true
+                    bat '''
+                        if exist allure-results (
+                            echo.
+                            echo ===== Allure 报告查看方式 =====
+                            echo 请勿双击 index.html ^(file:// 会一直 Loading^)
+                            echo 请在 workspace 目录执行:
+                            echo   allure serve allure-results
+                            echo 或:
+                            echo   allure open allure-report
+                            echo ================================
+                        )
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo 'Pipeline failed — 查看 Allure 报告与控制台日志'
+        }
+        success {
+            echo 'Pipeline succeeded'
+        }
+    }
+}

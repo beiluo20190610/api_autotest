@@ -1,0 +1,129 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+    }
+
+    environment {
+        PYTHONIOENCODING = 'utf-8'
+        SKIP_CLEANUP = '0'
+        // 本地 api_autotest 项目根目录（按实际路径修改）
+        PROJECT_DIR = 'D:\\MyTest-API\\MyTest\\api_autotest'
+        PYTHONPATH = 'D:\\MyTest-API\\MyTest\\api_autotest'
+    }
+
+    parameters {
+        choice(name: 'MODE', choices: ['full', 'smoke'], description: 'full=全量场景, smoke=冒烟')
+        booleanParam(name: 'SKIP_DB_CHECK', defaultValue: false, description: '跳过 MySQL 连通性检查')
+        booleanParam(name: 'SKIP_VERIFY', defaultValue: false, description: '跳过后端 P0/P1 探针')
+        booleanParam(name: 'SKIP_CLEANUP', defaultValue: false, description: 'pytest 结束后不清理测试数据')
+        string(name: 'FILTER', defaultValue: '', description: 'pytest -k 过滤，如 SCN-SYSTEMSTORE')
+    }
+
+    stages {
+        stage('进入项目') {
+            steps {
+                dir("${env.PROJECT_DIR}") {
+                    bat 'cd'
+                    echo "工作目录：${env.PROJECT_DIR}"
+                    echo 'Pipeline 脚本：Jenkinsfile-localhost（无 publishHTML）'
+                }
+            }
+        }
+
+        stage('安装依赖') {
+            steps {
+                dir("${env.PROJECT_DIR}") {
+                    bat '''
+                        python -m pip install -U pip
+                        pip install -r requirements.txt
+                    '''
+                }
+            }
+        }
+
+        stage('DB Check') {
+            when {
+                expression { return !params.SKIP_DB_CHECK }
+            }
+            steps {
+                dir("${env.PROJECT_DIR}") {
+                    bat 'python scripts\\check_db_connectivity.py'
+                }
+            }
+        }
+
+        stage('Backend Verify') {
+            when {
+                expression { return !params.SKIP_VERIFY }
+            }
+            steps {
+                dir("${env.PROJECT_DIR}") {
+                    bat 'python scripts\\verify_backend_fixes.py'
+                }
+            }
+        }
+
+        stage('Scenario Tests') {
+            steps {
+                dir("${env.PROJECT_DIR}") {
+                    script {
+                        def marker = params.MODE == 'smoke' ? 'scenario and smoke' : 'scenario'
+                        def filterArg = params.FILTER?.trim() ? "-k \"${params.FILTER.trim()}\"" : ''
+                        def skipCleanup = params.SKIP_CLEANUP ? 'set SKIP_CLEANUP=1&&' : ''
+                        bat """
+                            ${skipCleanup} python scripts\\clean_allure.py
+                            ${skipCleanup} pytest testcases\\test_scenario.py -m "${marker}" ${filterArg} -v -s -rA --alluredir=./allure-results
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Allure Report') {
+            steps {
+                dir("${env.PROJECT_DIR}") {
+                    bat '''
+                        where allure >nul 2>&1
+                        if %ERRORLEVEL%==0 (
+                            allure generate allure-results -o allure-report --clean
+                        ) else (
+                            echo allure CLI not found, skip report generation
+                        )
+                    '''
+                }
+            }
+            post {
+                always {
+                    dir("${env.PROJECT_DIR}") {
+                        archiveArtifacts artifacts: 'allure-results/**,allure-report/**,logs/**', allowEmptyArchive: true
+                        bat '''
+                            if exist allure-results (
+                                echo.
+                                echo ===== Allure 报告查看方式 =====
+                                echo 请勿双击 index.html ^(file:// 会一直 Loading^)
+                                echo 请在项目目录执行:
+                                echo   allure serve allure-results
+                                echo 或打开已生成的静态报告:
+                                echo   allure open allure-report
+                                echo ================================
+                            )
+                        '''
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo 'Pipeline failed — 查看 Allure 报告与控制台日志'
+        }
+        success {
+            echo 'Pipeline succeeded'
+        }
+    }
+}

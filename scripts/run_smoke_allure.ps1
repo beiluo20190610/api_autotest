@@ -6,7 +6,7 @@ Write-Host "==> 清理旧 Allure 结果..." -ForegroundColor Cyan
 python scripts/clean_allure.py
 
 Write-Host "==> 执行冒烟用例..." -ForegroundColor Cyan
-pytest testcases/ -m smoke --alluredir=./allure-results
+pytest testcases/test_scenario.py -m "scenario and smoke" --alluredir=./allure-results
 if ($LASTEXITCODE -ne 0) {
     Write-Host "pytest 存在失败用例，退出码: $LASTEXITCODE" -ForegroundColor Yellow
 }

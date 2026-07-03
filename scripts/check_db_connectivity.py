@@ -44,6 +44,10 @@ def check_mysql() -> bool:
 
 
 def check_redis() -> bool:
+    if os.getenv("CHECK_REDIS", "").lower() not in ("1", "true", "yes"):
+        print("\n=== Redis ===")
+        print("SKIP: 自动化已禁用直连 Redis，设置 CHECK_REDIS=1 可手动检测")
+        return True
     print("\n=== Redis ===")
     try:
         try:

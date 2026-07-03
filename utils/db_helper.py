@@ -50,6 +50,9 @@ DB_QUERIES: Dict[str, str] = {
     "article_cid": (
         "SELECT id FROM eb_category WHERE type=3 AND status=1 ORDER BY id DESC LIMIT 1"
     ),
+    "article_id": (
+        "SELECT id FROM eb_article ORDER BY id DESC LIMIT 1"
+    ),
     "shipping_template_id": (
         "SELECT id FROM eb_shipping_templates ORDER BY id DESC LIMIT 1"
     ),
@@ -58,6 +61,9 @@ DB_QUERIES: Dict[str, str] = {
     ),
     "role_id": (
         "SELECT id FROM eb_system_role ORDER BY id DESC LIMIT 1"
+    ),
+    "admin_id": (
+        "SELECT id FROM eb_system_admin ORDER BY id DESC LIMIT 1"
     ),
     "user_group_id": (
         "SELECT id FROM eb_user_group ORDER BY id DESC LIMIT 1"
@@ -81,6 +87,10 @@ DB_QUERIES: Dict[str, str] = {
     "product_rule_id": (
         "SELECT id FROM eb_store_product_rule ORDER BY id DESC LIMIT 1"
     ),
+    "latest_product_rule_id": (
+        "SELECT id FROM eb_store_product_rule WHERE rule_name LIKE 'auto_%' "
+        "ORDER BY id DESC LIMIT 1"
+    ),
     "mer_id": (
         "SELECT IFNULL(MIN(id), 0) FROM eb_system_store WHERE is_del=0"
     ),
@@ -93,14 +103,28 @@ DB_QUERIES: Dict[str, str] = {
         "AND satt_dir <> '' ORDER BY att_id DESC LIMIT 1"
     ),
     "form_id": (
-        "SELECT id FROM eb_system_form_temp ORDER BY id DESC LIMIT 1"
+        "SELECT id FROM eb_system_form_temp WHERE name LIKE 'seed_%' "
+        "OR content LIKE '%__vModel__%' ORDER BY id DESC LIMIT 1"
     ),
     "form_content": (
         "SELECT content FROM eb_system_form_temp WHERE content IS NOT NULL "
         "AND content <> '' ORDER BY id DESC LIMIT 1"
     ),
     "system_group_id": (
+        "SELECT COALESCE("
+        "(SELECT g.id FROM eb_system_group g "
+        "INNER JOIN eb_system_group_data d ON g.id = d.gid "
+        "WHERE g.name LIKE 'seed_%' ORDER BY d.id DESC LIMIT 1), "
+        "(SELECT id FROM eb_system_group WHERE name LIKE 'seed_%' ORDER BY id DESC LIMIT 1), "
+        "(SELECT gid FROM eb_system_group_data ORDER BY id DESC LIMIT 1), "
+        "(SELECT id FROM eb_system_group ORDER BY id DESC LIMIT 1)"
+        ")"
+    ),
+    "latest_system_group_id": (
         "SELECT id FROM eb_system_group ORDER BY id DESC LIMIT 1"
+    ),
+    "auto_system_group_id": (
+        "SELECT id FROM eb_system_group WHERE name LIKE 'auto_%' ORDER BY id DESC LIMIT 1"
     ),
     "schedule_job_id": (
         "SELECT job_id FROM eb_schedule_job ORDER BY job_id DESC LIMIT 1"
@@ -127,13 +151,27 @@ DB_QUERIES: Dict[str, str] = {
         "SELECT id FROM eb_store_seckill_manger ORDER BY id DESC LIMIT 1"
     ),
     "city_id": (
-        "SELECT city_id FROM eb_system_city WHERE parent_id > 0 ORDER BY city_id DESC LIMIT 1"
+        "SELECT id FROM eb_system_city WHERE parent_id > 0 AND is_show=1 ORDER BY id DESC LIMIT 1"
+    ),
+    "city_row_parent_id": (
+        "SELECT parent_id FROM eb_system_city WHERE id = "
+        "(SELECT id FROM eb_system_city WHERE parent_id > 0 AND is_show=1 ORDER BY id DESC LIMIT 1)"
     ),
     "menu_id": (
         "SELECT id FROM eb_system_menu ORDER BY id DESC LIMIT 1"
     ),
+    "latest_menu_id": (
+        "SELECT id FROM eb_system_menu WHERE name LIKE 'auto_%' ORDER BY id DESC LIMIT 1"
+    ),
     "staff_id": (
         "SELECT id FROM eb_system_store_staff ORDER BY id DESC LIMIT 1"
+    ),
+    "latest_staff_id": (
+        "SELECT id FROM eb_system_store_staff ORDER BY id DESC LIMIT 1"
+    ),
+    "fresh_staff_uid": (
+        "SELECT u.uid FROM eb_user u LEFT JOIN eb_system_store_staff s ON u.uid=s.uid "
+        "WHERE s.uid IS NULL ORDER BY u.uid DESC LIMIT 1"
     ),
     "role_rules": (
         "SELECT rules FROM eb_system_role WHERE rules IS NOT NULL AND rules <> '' "
@@ -152,14 +190,38 @@ DB_QUERIES: Dict[str, str] = {
     "wechat_reply_id": (
         "SELECT id FROM eb_wechat_reply ORDER BY id DESC LIMIT 1"
     ),
+    "wechat_reply_keywords": (
+        "SELECT keywords FROM eb_wechat_reply WHERE keywords IS NOT NULL "
+        "AND keywords <> '' ORDER BY id DESC LIMIT 1"
+    ),
     "pagediy_id": (
-        "SELECT id FROM eb_pagediy ORDER BY id DESC LIMIT 1"
+        "SELECT id FROM eb_page_diy ORDER BY id DESC LIMIT 1"
     ),
     "activity_style_id": (
         "SELECT id FROM eb_activity_style ORDER BY id DESC LIMIT 1"
     ),
     "group_data_id": (
         "SELECT id FROM eb_system_group_data ORDER BY id DESC LIMIT 1"
+    ),
+    "user_level_id": (
+        "SELECT id FROM eb_system_user_level ORDER BY id DESC LIMIT 1"
+    ),
+    "group_form_id": (
+        "SELECT form_id FROM eb_system_group WHERE id = "
+        "(SELECT id FROM eb_system_group ORDER BY id DESC LIMIT 1)"
+    ),
+    "notification_wechat_id": (
+        "SELECT id FROM eb_system_notification WHERE is_wechat > 0 ORDER BY id LIMIT 1"
+    ),
+    "notification_routine_id": (
+        "SELECT id FROM eb_system_notification WHERE is_routine > 0 ORDER BY id LIMIT 1"
+    ),
+    "notification_sms_id": (
+        "SELECT id FROM eb_system_notification WHERE is_sms > 0 ORDER BY id LIMIT 1"
+    ),
+    "wechat_template_temp_id": (
+        "SELECT temp_id FROM eb_template_message WHERE status = 1 "
+        "AND temp_id IS NOT NULL AND temp_id <> '' ORDER BY id LIMIT 1"
     ),
 }
 
@@ -222,8 +284,50 @@ class CrmebDb:
         return None
 
     @classmethod
+    def get_fresh(cls, key: str, default: str = "") -> str:
+        """绕过缓存读取最新值（save 后回填 entity_id）。"""
+        cls._cache.pop(key, None)
+        return cls.get_optional(key, default)
+
+    @classmethod
     def clear_cache(cls) -> None:
         cls._cache.clear()
+
+    @classmethod
+    def get_wechat_reply_id_by_keywords(cls, keywords: str) -> str:
+        if not keywords:
+            return ""
+        conn = cls._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM eb_wechat_reply WHERE keywords = %s ORDER BY id DESC LIMIT 1",
+                    (keywords,),
+                )
+                row = cur.fetchone()
+                if row:
+                    val = str(next(iter(row.values())))
+                    cls._cache["wechat_reply_id"] = val
+                    return val
+        finally:
+            conn.close()
+        return ""
+
+    @classmethod
+    def execute(cls, sql: str, params: tuple = ()) -> int:
+        conn = cls._connect()
+        try:
+            with conn.cursor() as cur:
+                affected = cur.execute(sql, params)
+            conn.commit()
+            return affected
+        finally:
+            conn.close()
+
+    @classmethod
+    def flush_redis(cls) -> None:
+        """清空测试 Redis DB（已禁用：远程未暴露 6379，自动化不直连 Redis）。"""
+        return
 
     @classmethod
     def _connect(cls):

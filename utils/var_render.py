@@ -2,11 +2,13 @@ import os
 import re
 from typing import Any, Dict, Optional
 
+from utils.context_data import ctx_get_from
+from utils.db_helper import DB_PLACEHOLDER_ALIAS
 from utils.mock_data import MockData
 
 
 class VarRender:
-    """动态变量渲染：${ENV}、${DB:key}、场景 context、DB 别名、Mock。"""
+    """动态变量渲染：仅从 context / Mock / ENV 取值，运行时不查库。"""
 
     _pattern = re.compile(r"\$\{([^}]+)\}")
 
@@ -21,14 +23,20 @@ class VarRender:
             if key in context and context[key] is not None:
                 return str(context[key])
             if key.startswith("DB:"):
-                from utils.db_helper import CrmebDb
-
-                return CrmebDb.get(key[3:])
-            from utils.db_helper import CrmebDb
-
-            db_val = CrmebDb.resolve_placeholder(key)
-            if db_val is not None:
-                return db_val
+                db_key = key[3:]
+                val = ctx_get_from(context, db_key, "")
+                if val != "":
+                    return val
+                if db_key in context:
+                    return str(context[db_key])
+                return match.group(0)
+            db_key = DB_PLACEHOLDER_ALIAS.get(key)
+            if db_key:
+                val = ctx_get_from(context, db_key, "")
+                if val != "":
+                    return val
+            if key in DB_PLACEHOLDER_ALIAS.values() and key in context:
+                return str(context[key])
             try:
                 return MockData.get(key)
             except KeyError:
@@ -42,7 +50,6 @@ class VarRender:
 
     @staticmethod
     def render_dict(data: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """递归渲染字典中的字符串占位符。"""
         context = context or {}
         result = {}
         for key, value in data.items():
