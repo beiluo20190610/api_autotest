@@ -1,6 +1,5 @@
 import allure
 import pytest
-import requests
 
 from core.scenario_runner import ScenarioRunner
 from utils.scenario_data import ScenarioDataHandler
